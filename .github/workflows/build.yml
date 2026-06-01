@@ -59,7 +59,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.25.x"
+          go-version: "stable"
 
       - name: Build CLI
         run: make ${{ matrix.make_target }}
@@ -93,7 +93,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.25.x"
+          go-version: "stable"
 
       - name: Build all CLI targets
         run: make dist
@@ -118,18 +118,19 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.25.x"
+          go-version: "stable"
 
       - name: Build Go binaries for Android
         run: |
           make android-arm64
           make android-x64
 
-      - name: Bundle binaries into assets
+      - name: Bundle binaries into jniLibs
         run: |
-          mkdir -p android/app/src/main/assets/
-          cp dist/sni-spoofing-android-arm64 android/app/src/main/assets/
-          cp dist/sni-spoofing-android-x64 android/app/src/main/assets/
+          mkdir -p android/app/src/main/jniLibs/arm64-v8a
+          mkdir -p android/app/src/main/jniLibs/x86_64
+          cp dist/libsni_spoofing.so android/app/src/main/jniLibs/arm64-v8a/
+          cp dist/libsni_spoofing_x64.so android/app/src/main/jniLibs/x86_64/
 
       - name: Set up JDK 21
         uses: actions/setup-java@v4
@@ -203,7 +204,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.25.x"
+          go-version: "stable"
 
       - name: Set up Node
         uses: actions/setup-node@v4

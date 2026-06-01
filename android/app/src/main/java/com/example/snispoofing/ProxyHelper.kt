@@ -3,38 +3,24 @@ package com.example.snispoofing
 import android.content.Context
 import android.os.Build
 import java.io.File
-import java.io.FileOutputStream
 
 object ProxyHelper {
-    private const val BINARY_NAME_ARM64 = "sni-spoofing-android-arm64"
-    private const val BINARY_NAME_X64 = "sni-spoofing-android-x64"
-
-    fun prepareBinary(context: Context): String {
-        var binaryToExtract: String? = null
-        for (abi in Build.SUPPORTED_ABIS) {
-            if (abi.contains("arm64")) {
-                binaryToExtract = BINARY_NAME_ARM64
-                break
-            } else if (abi.contains("x86_64") || abi.contains("amd64")) {
-                binaryToExtract = BINARY_NAME_X64
-                break
-            }
+    fun getBinaryPath(context: Context): String {
+        val abi = Build.SUPPORTED_ABIS[0]
+        val libName = if (abi.contains("arm64")) {
+            "libsni_spoofing.so"
+        } else {
+            "libsni_spoofing_x64.so"
         }
 
-        if (binaryToExtract == null) {
-            throw UnsupportedOperationException("Unsupported ABI: ${Build.SUPPORTED_ABIS.joinToString()}")
+        val libFile = File(context.applicationInfo.nativeLibraryDir, libName)
+        if (!libFile.exists()) {
+            // Fallback for some environments or manual installs
+            val alternativeLibFile = File(context.applicationInfo.nativeLibraryDir, "libsni_spoofing.so")
+            if (alternativeLibFile.exists()) return alternativeLibFile.absolutePath
+
+            throw IllegalStateException("Binary not found at ${libFile.absolutePath}")
         }
-
-        val destFile = File(context.filesDir, "sni-spoofing")
-
-        // Always extract for simplicity in this example, or check version/hash
-        context.assets.open(binaryToExtract).use { input ->
-            FileOutputStream(destFile).use { output ->
-                input.copyTo(output)
-            }
-        }
-
-        destFile.setExecutable(true)
-        return destFile.absolutePath
+        return libFile.absolutePath
     }
 }

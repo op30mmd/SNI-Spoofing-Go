@@ -159,12 +159,12 @@ darwin-arm64:
 android-arm64:
 	@mkdir -p $(DIST)
 	CGO_ENABLED=$(CGO_ENABLED) GOOS=android GOARCH=arm64 \
-		go build -ldflags "$(LDFLAGS)" -o $(DIST)/sni-spoofing-android-arm64 .
+		go build -ldflags "$(LDFLAGS)" -o $(DIST)/libsni_spoofing.so .
 
 android-x64:
 	@mkdir -p $(DIST)
 	CGO_ENABLED=$(CGO_ENABLED) GOOS=linux GOARCH=amd64 \
-		go build -ldflags "$(LDFLAGS)" -o $(DIST)/sni-spoofing-android-x64 .
+		go build -ldflags "$(LDFLAGS)" -o $(DIST)/libsni_spoofing_x64.so .
 
 dist all: windows-amd64 windows-arm64 linux-amd64 linux-arm64 linux-armv7 linux-mipsle linux-mips darwin-amd64 darwin-arm64 android-arm64 android-x64
 	@echo "Done. Binaries in $(DIST)/"
@@ -201,10 +201,10 @@ cli-asset-darwin-arm64:
 	@echo $(CLI_ASSET_DARWIN_ARM64)
 
 cli-asset-android-arm64:
-	@echo $(CLI_ASSET_ANDROID_ARM64)
+	@echo $(DIST)/libsni_spoofing.so
 
 cli-asset-android-x64:
-	@echo $(CLI_ASSET_ANDROID_X64)
+	@echo $(DIST)/libsni_spoofing_x64.so
 
 # --- GUI (Wails); scratch in $(GUI_WAILS_OUT)/, release copies in $(DIST)/ ---
 

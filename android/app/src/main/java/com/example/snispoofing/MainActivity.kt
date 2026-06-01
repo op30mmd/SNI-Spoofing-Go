@@ -1,6 +1,7 @@
 package com.example.snispoofing
 
 import android.os.Bundle
+import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.*
@@ -16,6 +17,10 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 class MainActivity : ComponentActivity() {
+    companion object {
+        private const val TAG = "SNISpoofing"
+    }
+
     private var proxyProcess: Process? = null
     private var isProxyRunning by mutableStateOf(false)
 
@@ -37,7 +42,7 @@ class MainActivity : ComponentActivity() {
     private fun startProxy(listen: String, connect: String, fakeSni: String, utls: String) {
         lifecycleScope.launch(Dispatchers.IO) {
             try {
-                val binaryPath = ProxyHelper.prepareBinary(this@MainActivity)
+                val binaryPath = ProxyHelper.getBinaryPath(this@MainActivity)
                 val cmd = mutableListOf(binaryPath, "-listen", listen, "-connect", connect)
                 if (fakeSni.isNotBlank()) {
                     cmd.add("-fake-sni")
@@ -54,20 +59,24 @@ class MainActivity : ComponentActivity() {
                     .redirectErrorStream(true)
                     .start()
                 proxyProcess = process
-                isProxyRunning = true
+                withContext(Dispatchers.Main) {
+                    isProxyRunning = true
+                }
 
                 val reader = process.inputStream.bufferedReader()
                 var line: String?
                 while (reader.readLine().also { line = it } != null) {
-                    println("Proxy: $line")
+                    Log.d(TAG, "Proxy: $line")
                 }
 
                 val exitCode = process.waitFor()
-                println("Proxy exited with code $exitCode")
+                Log.d(TAG, "Proxy exited with code $exitCode")
             } catch (e: Exception) {
-                e.printStackTrace()
+                Log.e(TAG, "Failed to run proxy", e)
             } finally {
-                isProxyRunning = false
+                withContext(Dispatchers.Main) {
+                    isProxyRunning = false
+                }
             }
         }
     }
