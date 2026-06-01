@@ -42,6 +42,12 @@ jobs:
           - target: darwin-arm64
             make_target: darwin-arm64
             asset_target: cli-asset-darwin-arm64
+          - target: android-arm64
+            make_target: android-arm64
+            asset_target: cli-asset-android-arm64
+          - target: android-x64
+            make_target: android-x64
+            asset_target: cli-asset-android-x64
 
     steps:
       - name: Checkout repository
@@ -96,6 +102,63 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: gh release upload "${{ github.event.release.tag_name }}" dist/* --clobber
+
+  build-android-app:
+    name: Build Android App
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.x"
+
+      - name: Build Go binaries for Android
+        run: |
+          make android-arm64
+          make android-x64
+
+      - name: Bundle binaries into assets
+        run: |
+          mkdir -p android/app/src/main/assets/
+          cp dist/sni-spoofing-android-arm64 android/app/src/main/assets/
+          cp dist/sni-spoofing-android-x64 android/app/src/main/assets/
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+          cache: 'gradle'
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x android/gradlew || true
+
+      - name: Build with Gradle
+        run: |
+          cd android
+          if [ -f ./gradlew ]; then
+            ./gradlew assembleDebug
+          else
+            gradle assembleDebug
+          fi
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: sni-spoofing-android-debug
+          path: android/app/build/outputs/apk/debug/*.apk
+
+      - name: Upload APK to release
+        if: github.event_name == 'release'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload "${{ github.event.release.tag_name }}" android/app/build/outputs/apk/debug/*.apk --clobber
 
   build-gui:
     name: Build GUI (${{ matrix.target }})
