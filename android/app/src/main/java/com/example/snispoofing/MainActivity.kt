@@ -17,11 +17,13 @@ import kotlinx.coroutines.withContext
 
 class MainActivity : ComponentActivity() {
     private var proxyProcess: Process? = null
+    private var isProxyRunning by mutableStateOf(false)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
             SNISpoofingApp(
+                isRunning = isProxyRunning,
                 onStart = { listen, connect, fakeSni, utls ->
                     startProxy(listen, connect, fakeSni, utls)
                 },
@@ -52,6 +54,7 @@ class MainActivity : ComponentActivity() {
                     .redirectErrorStream(true)
                     .start()
                 proxyProcess = process
+                isProxyRunning = true
 
                 val reader = process.inputStream.bufferedReader()
                 var line: String?
@@ -63,6 +66,8 @@ class MainActivity : ComponentActivity() {
                 println("Proxy exited with code $exitCode")
             } catch (e: Exception) {
                 e.printStackTrace()
+            } finally {
+                isProxyRunning = false
             }
         }
     }
@@ -81,6 +86,7 @@ class MainActivity : ComponentActivity() {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SNISpoofingApp(
+    isRunning: Boolean,
     onStart: (String, String, String, String) -> Unit,
     onStop: () -> Unit
 ) {
@@ -88,7 +94,6 @@ fun SNISpoofingApp(
     var connect by remember { mutableStateOf("104.19.229.21:443") }
     var fakeSni by remember { mutableStateOf("hcaptcha.com") }
     var utls by remember { mutableStateOf("firefox") }
-    var isRunning by remember { mutableStateOf(false) }
 
     MaterialTheme {
         Scaffold(
@@ -138,7 +143,6 @@ fun SNISpoofingApp(
                 if (!isRunning) {
                     Button(
                         onClick = {
-                            isRunning = true
                             onStart(listen, connect, fakeSni, utls)
                         },
                         modifier = Modifier.fillMaxWidth()
@@ -148,7 +152,6 @@ fun SNISpoofingApp(
                 } else {
                     Button(
                         onClick = {
-                            isRunning = false
                             onStop()
                         },
                         modifier = Modifier.fillMaxWidth(),

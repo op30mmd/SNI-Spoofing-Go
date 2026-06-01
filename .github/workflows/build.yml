@@ -270,26 +270,17 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract metadata (tags, labels) for release
-        if: github.event_name == 'release'
-        id: meta-release
+      - name: Extract metadata (tags, labels) for Docker image
+        id: meta
         uses: docker/metadata-action@v5
         with:
           images: ghcr.io/${{ github.repository_owner }}/sni-spoofing-go
           tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern={{major}}
-            type=raw,value=latest
-
-      - name: Extract metadata (tags, labels) for manual trigger
-        if: github.event_name == 'workflow_dispatch'
-        id: meta-manual
-        uses: docker/metadata-action@v5
-        with:
-          images: ghcr.io/${{ github.repository_owner }}/sni-spoofing-go
-          tags: |
-            type=raw,value=${{ github.ref_name }}-{{sha}}
+            type=semver,pattern={{version}},event=release
+            type=semver,pattern={{major}}.{{minor}},event=release
+            type=semver,pattern={{major}},event=release
+            type=raw,value=latest,enable=${{ github.event_name == 'release' }}
+            type=raw,value=${{ github.ref_name }}-{{sha}},enable=${{ github.event_name != 'release' }}
 
       - name: Build and push multi-arch image
         uses: docker/build-push-action@v6
@@ -297,6 +288,6 @@ jobs:
           context: .
           file: ./Dockerfile
           platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ${{ github.event_name == 'release' && steps.meta-release.outputs.tags || steps.meta-manual.outputs.tags }}
-          labels: ${{ github.event_name == 'release' && steps.meta-release.outputs.labels || steps.meta-manual.outputs.labels }}
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
