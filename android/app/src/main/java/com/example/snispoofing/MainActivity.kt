@@ -126,10 +126,10 @@ class MainActivity : ComponentActivity() {
             proxyProcess?.destroy()
             proxyProcess = null
             try {
-                // Ensure all instances are killed via root since destroy() might only kill the 'su' wrapper
-                ProcessBuilder("su", "-c", "pkill -f libsni_spoofing.so").start().waitFor()
+                // pkill -9 is needed for forceful termination of orphaned processes
+                ProcessBuilder("su", "-c", "pkill -9 -f libsni_spoofing.so").start().waitFor()
             } catch (e: Exception) {
-                Log.e(TAG, "Failed to pkill orphaned proxy", e)
+                Log.e(TAG, "Failed to pkill -9 orphaned proxy", e)
             }
         }
     }
