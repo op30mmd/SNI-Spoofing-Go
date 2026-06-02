@@ -1,9 +1,19 @@
 apply plugin: 'com.android.application'
 apply plugin: 'kotlin-android'
+apply plugin: 'kotlin-parcelize'
 
 android {
     namespace 'com.example.snispoofing'
     compileSdk 34
+
+    signingConfigs {
+        release {
+            storeFile file('release.keystore')
+            storePassword RELEASE_STORE_PASSWORD
+            keyAlias 'release'
+            keyPassword RELEASE_KEY_PASSWORD
+        }
+    }
 
     defaultConfig {
         applicationId "com.example.snispoofing"
@@ -21,6 +31,7 @@ android {
     buildTypes {
         release {
             minifyEnabled false
+            signingConfig signingConfigs.release
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
         }
     }

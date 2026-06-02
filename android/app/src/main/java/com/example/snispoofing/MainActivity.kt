@@ -1,41 +1,101 @@
 package com.example.snispoofing
 
-import android.os.Bundle
+import android.Manifest
+import android.content.*
+import android.content.pm.PackageManager
+import android.os.*
 import android.util.Log
+import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
 import androidx.compose.foundation.background
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.lifecycleScope
-import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
+import kotlinx.parcelize.Parcelize
 
 class MainActivity : ComponentActivity() {
     companion object {
         private const val TAG = "SNISpoofing"
     }
 
-    private var proxyProcess: Process? = null
+    private var proxyService: ProxyService? = null
+    private var isBound by mutableStateOf(false)
     private var isProxyRunning by mutableStateOf(false)
     private val logs = mutableStateListOf<String>()
+
+    private val connection = object : ServiceConnection {
+        override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
+            val binder = service as ProxyService.LocalBinder
+            proxyService = binder.getService()
+            isBound = true
+
+            lifecycleScope.launch {
+                proxyService?.isRunning?.collectLatest { running ->
+                    isProxyRunning = running
+                }
+            }
+
+            lifecycleScope.launch {
+                proxyService?.logs?.collectLatest { log ->
+                    logs.add(log)
+                    if (logs.size > 1000) logs.removeAt(0)
+                }
+            }
+        }
+
+        override fun onServiceDisconnected(name: ComponentName?) {
+            proxyService = null
+            isBound = false
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
+
+        Intent(this, ProxyService::class.java).also { intent ->
+            bindService(intent, connection, Context.BIND_AUTO_CREATE)
+        }
+
         setContent {
             val darkTheme = isSystemInDarkTheme()
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                val launcher = rememberLauncherForActivityResult(
+                    ActivityResultContracts.RequestPermission()
+                ) { isGranted ->
+                    if (!isGranted) {
+                        Toast.makeText(this, "Notification permission is required for the foreground service", Toast.LENGTH_LONG).show()
+                    }
+                }
+                LaunchedEffect(Unit) {
+                    if (ContextCompat.checkSelfPermission(this@MainActivity, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+                        launcher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                    }
+                }
+            }
+
             MaterialTheme(colorScheme = if (darkTheme) darkColorScheme() else lightColorScheme()) {
                 SNISpoofingApp(
                     isRunning = isProxyRunning,
@@ -52,85 +112,30 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun startProxy(config: ProxyConfig) {
-        lifecycleScope.launch(Dispatchers.IO) {
-            try {
-                val binaryPath = ProxyHelper.getBinaryPath(this@MainActivity)
-
-                // Build command
-                val args = mutableListOf(binaryPath, "-listen", config.listen, "-connect", config.connect)
-                if (config.fakeSni.isNotBlank()) args.addAll(listOf("-fake-sni", config.fakeSni))
-                if (config.utls.isNotBlank()) args.addAll(listOf("-utls", config.utls))
-                args.addAll(listOf("-fake-repeat", config.fakeRepeat.toString()))
-                args.addAll(listOf("-fake-delay", config.fakeDelay))
-                args.addAll(listOf("-ack-timeout", config.ackTimeout))
-                args.addAll(listOf("-injector", config.injector))
-                if (config.enableFragment) {
-                    args.add("-enable-fragment")
-                    args.addAll(listOf("-fragment-delay", config.fragmentDelay))
-                    args.addAll(listOf("-sni-chunk", config.sniChunk.toString()))
-                }
-
-                // Request root by running via su
-                val cmd = mutableListOf("su", "-c", args.joinToString(" ") { "'$it'" })
-
-                withContext(Dispatchers.Main) {
-                    logs.clear()
-                    logs.add("Starting proxy with root...")
-                }
-
-                stopProxy()
-
-                val process = ProcessBuilder(cmd)
-                    .redirectErrorStream(true)
-                    .start()
-                proxyProcess = process
-
-                withContext(Dispatchers.Main) {
-                    isProxyRunning = true
-                }
-
-                val reader = process.inputStream.bufferedReader()
-                var line: String?
-                while (reader.readLine().also { line = it } != null) {
-                    Log.d(TAG, "Proxy: $line")
-                    withContext(Dispatchers.Main) {
-                        logs.add(line ?: "")
-                        if (logs.size > 1000) logs.removeAt(0)
-                    }
-                }
-
-                val exitCode = process.waitFor()
-                withContext(Dispatchers.Main) {
-                    logs.add("Proxy exited with code $exitCode")
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to run proxy", e)
-                withContext(Dispatchers.Main) {
-                    logs.add("Error: ${e.message}")
-                }
-            } finally {
-                withContext(Dispatchers.Main) {
-                    isProxyRunning = false
-                }
-            }
+        val intent = Intent(this, ProxyService::class.java).apply {
+            putExtra("config", config)
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            startForegroundService(intent)
+        } else {
+            startService(intent)
         }
     }
 
     private fun stopProxy() {
-        lifecycleScope.launch(Dispatchers.IO) {
-            // Since we ran via su, we might need to kill it specifically if destroy() doesn't work well on the su wrapper
-            proxyProcess?.destroy()
-            proxyProcess = null
-            // Optional: run "su -c killall sni-spoofing" or similar if needed
-        }
+        proxyService?.stopProxy()
     }
 
     override fun onDestroy() {
-        stopProxy()
+        if (isBound) {
+            unbindService(connection)
+            isBound = false
+        }
         super.onDestroy()
     }
 }
 
+@Parcelize
 data class ProxyConfig(
     val listen: String = "127.0.0.1:40443",
     val connect: String = "104.19.229.21:443",
@@ -143,7 +148,7 @@ data class ProxyConfig(
     val enableFragment: Boolean = false,
     val fragmentDelay: String = "500ms",
     val sniChunk: Int = 3
-)
+) : Parcelable
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -154,11 +159,23 @@ fun SNISpoofingApp(
     onStop: () -> Unit
 ) {
     var config by remember { mutableStateOf(ProxyConfig()) }
-    val scrollState = rememberScrollState()
+    val clipboardManager = LocalClipboardManager.current
+    val context = LocalContext.current
 
     Scaffold(
         topBar = {
-            TopAppBar(title = { Text("SNI Spoofing (Root)") })
+            TopAppBar(
+                title = { Text("SNI Spoofing (Root)") },
+                actions = {
+                    IconButton(onClick = {
+                        val allLogs = logs.joinToString("\n")
+                        clipboardManager.setText(AnnotatedString(allLogs))
+                        Toast.makeText(context, "Logs copied to clipboard", Toast.LENGTH_SHORT).show()
+                    }) {
+                        Icon(Icons.Default.ContentCopy, contentDescription = "Copy Logs")
+                    }
+                }
+            )
         }
     ) { padding ->
         Column(
