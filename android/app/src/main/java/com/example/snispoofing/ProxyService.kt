@@ -99,13 +99,24 @@ class ProxyService : Service() {
                 proxyProcess = process
 
                 val reader = BufferedReader(InputStreamReader(process.inputStream))
-                var line: String?
-                while (reader.readLine().also { line = it } != null) {
-                    Log.d(TAG, "Proxy: $line")
-                    _logs.emit(line ?: "")
+                try {
+                    var line: String?
+                    while (isActive) {
+                        line = withContext(Dispatchers.IO) { reader.readLine() }
+                        if (line == null) break
+                        Log.d(TAG, "Proxy: $line")
+                        _logs.emit(line)
+                    }
+                } catch (e: Exception) {
+                    if (isActive) {
+                        Log.e(TAG, "Log reading error", e)
+                        _logs.emit("Log reading error: ${e.message}")
+                    }
+                } finally {
+                    try { reader.close() } catch (ignored: Exception) {}
                 }
 
-                val exitCode = process.waitFor()
+                val exitCode = withContext(Dispatchers.IO) { process.waitFor() }
                 _logs.emit("Proxy exited with code $exitCode")
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to run proxy", e)
@@ -139,8 +150,25 @@ class ProxyService : Service() {
     }
 
     private fun stopProxyProcess() {
-        proxyProcess?.destroy()
+        val process = proxyProcess ?: return
         proxyProcess = null
+
+        serviceScope.launch(Dispatchers.IO) {
+            try {
+                // Since we run via 'su', process.destroy() only kills the 'su' wrapper.
+                // We need to kill the actual binary specifically.
+                val binaryPath = ProxyHelper.getBinaryPath(this@ProxyService)
+                val binaryName = binaryPath.substringAfterLast('/')
+
+                // Try graceful kill first then SIGKILL
+                Runtime.getRuntime().exec(arrayOf("su", "-c", "pkill -SIGTERM $binaryName")).waitFor()
+                delay(500)
+                process.destroy()
+                Runtime.getRuntime().exec(arrayOf("su", "-c", "pkill -SIGKILL $binaryName")).waitFor()
+            } catch (e: Exception) {
+                Log.e(TAG, "Error stopping proxy process", e)
+            }
+        }
     }
 
     private fun createNotification(): Notification {

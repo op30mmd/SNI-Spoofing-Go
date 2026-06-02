@@ -57,9 +57,11 @@ class MainActivity : ComponentActivity() {
             }
 
             lifecycleScope.launch {
-                proxyService?.logs?.collectLatest { log ->
+                proxyService?.logs?.collect { log ->
+                    if (logs.size >= 1000) {
+                        logs.removeAt(0)
+                    }
                     logs.add(log)
-                    if (logs.size > 1000) logs.removeAt(0)
                 }
             }
         }
