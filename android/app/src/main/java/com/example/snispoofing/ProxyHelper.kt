@@ -6,21 +6,17 @@ import java.io.File
 
 object ProxyHelper {
     fun getBinaryPath(context: Context): String {
-        val abi = Build.SUPPORTED_ABIS[0]
-        val libName = if (abi.contains("arm64")) {
-            "libsni_spoofing.so"
-        } else {
-            "libsni_spoofing_x64.so"
+        val libDir = context.applicationInfo.nativeLibraryDir
+        val candidates = listOf("libsni_spoofing.so")
+
+        for (candidate in candidates) {
+            val file = File(libDir, candidate)
+            if (file.exists()) {
+                return file.absolutePath
+            }
         }
 
-        val libFile = File(context.applicationInfo.nativeLibraryDir, libName)
-        if (!libFile.exists()) {
-            // Fallback for some environments or manual installs
-            val alternativeLibFile = File(context.applicationInfo.nativeLibraryDir, "libsni_spoofing.so")
-            if (alternativeLibFile.exists()) return alternativeLibFile.absolutePath
-
-            throw IllegalStateException("Binary not found at ${libFile.absolutePath}")
-        }
-        return libFile.absolutePath
+        val filesInLibDir = File(libDir).list()?.joinToString(", ") ?: "null"
+        throw IllegalStateException("Binary not found in $libDir. Files present: $filesInLibDir")
     }
 }
