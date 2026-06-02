@@ -6,9 +6,11 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
 import android.content.Intent
+import android.content.ServiceConnection
 import android.os.Binder
 import android.os.Build
 import android.os.IBinder
+import android.os.Parcelable
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import kotlinx.coroutines.*
@@ -48,7 +50,12 @@ class ProxyService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        val config = intent?.getParcelableExtra<ProxyConfig>("config")
+        val config = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            intent?.getParcelableExtra("config", ProxyConfig::class.java)
+        } else {
+            @Suppress("DEPRECATION")
+            intent?.getParcelableExtra<ProxyConfig>("config")
+        }
         if (config != null) {
             startProxy(config)
         }
@@ -106,7 +113,12 @@ class ProxyService : Service() {
             } finally {
                 proxyProcess = null
                 _isRunning.emit(false)
-                stopForeground(true)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                    stopForeground(STOP_FOREGROUND_REMOVE)
+                } else {
+                    @Suppress("DEPRECATION")
+                    stopForeground(true)
+                }
                 stopSelf()
             }
         }
@@ -116,7 +128,12 @@ class ProxyService : Service() {
         serviceScope.launch {
             stopProxyProcess()
             _isRunning.emit(false)
-            stopForeground(true)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                stopForeground(STOP_FOREGROUND_REMOVE)
+            } else {
+                @Suppress("DEPRECATION")
+                stopForeground(true)
+            }
             stopSelf()
         }
     }
