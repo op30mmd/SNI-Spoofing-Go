@@ -1,6 +1,9 @@
 name: Build binaries
 
 on:
+  push:
+    branches: [main]
+  pull_request: {}
   workflow_dispatch: {}
   release:
     types: [published]
@@ -9,7 +12,7 @@ jobs:
   # Manual runs: one matrix job per CLI binary (same pattern as build-gui).
   build-cli:
     name: Build CLI (${{ matrix.target }})
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'push' || github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -42,6 +45,12 @@ jobs:
           - target: darwin-arm64
             make_target: darwin-arm64
             asset_target: cli-asset-darwin-arm64
+          - target: android-arm64
+            make_target: android-arm64
+            asset_target: cli-asset-android-arm64
+          - target: android-x64
+            make_target: android-x64
+            asset_target: cli-asset-android-x64
 
     steps:
       - name: Checkout repository
@@ -50,7 +59,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.25.x"
+          go-version: "stable"
 
       - name: Build CLI
         run: make ${{ matrix.make_target }}
@@ -84,7 +93,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.25.x"
+          go-version: "stable"
 
       - name: Build all CLI targets
         run: make dist
@@ -96,6 +105,64 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: gh release upload "${{ github.event.release.tag_name }}" dist/* --clobber
+
+  build-android-app:
+    name: Build Android App
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "stable"
+
+      - name: Build Go binaries for Android
+        run: |
+          make android-arm64
+          make android-x64
+
+      - name: Bundle binaries into jniLibs
+        run: |
+          mkdir -p android/app/src/main/jniLibs/arm64-v8a
+          mkdir -p android/app/src/main/jniLibs/x86_64
+          cp dist/libsni_spoofing_android_arm64.so android/app/src/main/jniLibs/arm64-v8a/libsni_spoofing.so
+          cp dist/libsni_spoofing_android_x64.so android/app/src/main/jniLibs/x86_64/libsni_spoofing.so
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+          cache: 'gradle'
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x android/gradlew || true
+
+      - name: Build with Gradle
+        run: |
+          cd android
+          if [ -f ./gradlew ]; then
+            ./gradlew assembleDebug
+          else
+            gradle assembleDebug
+          fi
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: sni-spoofing-android-debug
+          path: android/app/build/outputs/apk/debug/*.apk
+
+      - name: Upload APK to release
+        if: github.event_name == 'release'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload "${{ github.event.release.tag_name }}" android/app/build/outputs/apk/debug/*.apk --clobber
 
   build-gui:
     name: Build GUI (${{ matrix.target }})
@@ -137,7 +204,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.25.x"
+          go-version: "stable"
 
       - name: Set up Node
         uses: actions/setup-node@v4
@@ -204,26 +271,17 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract metadata (tags, labels) for release
-        if: github.event_name == 'release'
-        id: meta-release
+      - name: Extract metadata (tags, labels) for Docker image
+        id: meta
         uses: docker/metadata-action@v5
         with:
           images: ghcr.io/${{ github.repository_owner }}/sni-spoofing-go
           tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern={{major}}
-            type=raw,value=latest
-
-      - name: Extract metadata (tags, labels) for manual trigger
-        if: github.event_name == 'workflow_dispatch'
-        id: meta-manual
-        uses: docker/metadata-action@v5
-        with:
-          images: ghcr.io/${{ github.repository_owner }}/sni-spoofing-go
-          tags: |
-            type=raw,value=${{ github.ref_name }}-{{sha}}
+            type=semver,pattern={{version}},event=release
+            type=semver,pattern={{major}}.{{minor}},event=release
+            type=semver,pattern={{major}},event=release
+            type=raw,value=latest,enable=${{ github.event_name == 'release' }}
+            type=raw,value=${{ github.ref_name }}-{{sha}},enable=${{ github.event_name != 'release' }}
 
       - name: Build and push multi-arch image
         uses: docker/build-push-action@v6
@@ -231,6 +289,6 @@ jobs:
           context: .
           file: ./Dockerfile
           platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ${{ github.event_name == 'release' && steps.meta-release.outputs.tags || steps.meta-manual.outputs.tags }}
-          labels: ${{ github.event_name == 'release' && steps.meta-release.outputs.labels || steps.meta-manual.outputs.labels }}
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}

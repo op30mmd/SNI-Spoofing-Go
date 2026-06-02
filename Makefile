@@ -33,6 +33,8 @@ CLI_ASSET_LINUX_MIPSLE := $(DIST)/sni-spoofing-linux-mipsle
 CLI_ASSET_LINUX_MIPS := $(DIST)/sni-spoofing-linux-mips
 CLI_ASSET_DARWIN_AMD64 := $(DIST)/sni-spoofing-darwin-amd64
 CLI_ASSET_DARWIN_ARM64 := $(DIST)/sni-spoofing-darwin-arm64
+CLI_ASSET_ANDROID_ARM64 := $(DIST)/sni-spoofing-android-arm64
+CLI_ASSET_ANDROID_X64 := $(DIST)/sni-spoofing-android-x64
 
 # Release GUI paths (CI: make -s gui-asset-<platform>)
 GUI_ASSET_LINUX_AMD64 := $(DIST)/sni-spoofing-gui-linux-amd64
@@ -43,7 +45,7 @@ GUI_ASSET_DARWIN := $(DIST)/sni-spoofing-gui-darwin-universal.zip
 
 .PHONY: help all dist dist-checksums clean mod test build \
 	windows-amd64 windows-arm64 linux-amd64 linux-arm64 linux-armv7 linux-mipsle linux-mips \
-	darwin-amd64 darwin-arm64 \
+	darwin-amd64 darwin-arm64 android-arm64 android-x64 \
 	install-wails deps-linux gui-frontend \
 	gui gui-windows-amd64 gui-windows-arm64 gui-linux-amd64 gui-linux-arm64 \
 	gui-darwin-universal gui-dist \
@@ -71,6 +73,8 @@ help:
 	@echo "  make linux-mips     (GOMIPS=softfloat)"
 	@echo "  make darwin-amd64   macOS Intel  -> $(DIST)/sni-spoofing-darwin-amd64"
 	@echo "  make darwin-arm64   macOS Apple  -> $(DIST)/sni-spoofing-darwin-arm64"
+	@echo "  make android-arm64  Android arm64 -> $(DIST)/sni-spoofing-android-arm64"
+	@echo "  make android-x64    Android x64   -> $(DIST)/sni-spoofing-android-x64"
 	@echo ""
 	@echo "  make gui                 GUI for this machine -> $(DIST)/sni-spoofing-gui-*"
 	@echo "  make gui-linux-amd64     $(GUI_ASSET_LINUX_AMD64)"
@@ -152,7 +156,17 @@ darwin-arm64:
 	CGO_ENABLED=$(CGO_ENABLED) GOOS=darwin GOARCH=arm64 \
 		go build -ldflags "$(LDFLAGS)" -o $(DIST)/sni-spoofing-darwin-arm64 .
 
-dist all: windows-amd64 windows-arm64 linux-amd64 linux-arm64 linux-armv7 linux-mipsle linux-mips darwin-amd64 darwin-arm64
+android-arm64:
+	@mkdir -p $(DIST)
+	CGO_ENABLED=$(CGO_ENABLED) GOOS=android GOARCH=arm64 \
+		go build -ldflags "$(LDFLAGS)" -o $(DIST)/libsni_spoofing_android_arm64.so .
+
+android-x64:
+	@mkdir -p $(DIST)
+	CGO_ENABLED=$(CGO_ENABLED) GOOS=linux GOARCH=amd64 \
+		go build -ldflags "$(LDFLAGS)" -o $(DIST)/libsni_spoofing_android_x64.so .
+
+dist all: windows-amd64 windows-arm64 linux-amd64 linux-arm64 linux-armv7 linux-mipsle linux-mips darwin-amd64 darwin-arm64 android-arm64 android-x64
 	@echo "Done. Binaries in $(DIST)/"
 	@ls -lh $(DIST)/
 
@@ -185,6 +199,12 @@ cli-asset-darwin-amd64:
 
 cli-asset-darwin-arm64:
 	@echo $(CLI_ASSET_DARWIN_ARM64)
+
+cli-asset-android-arm64:
+	@echo $(DIST)/libsni_spoofing_android_arm64.so
+
+cli-asset-android-x64:
+	@echo $(DIST)/libsni_spoofing_android_x64.so
 
 # --- GUI (Wails); scratch in $(GUI_WAILS_OUT)/, release copies in $(DIST)/ ---
 
