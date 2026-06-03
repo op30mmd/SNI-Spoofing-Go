@@ -141,6 +141,15 @@ func main() {
 		log.Fatal("Invalid configuration: ", err)
 	}
 
+	// Traffic loop protection
+	if cfg.ListenPort == cfg.ConnectPort {
+		isLoopback := cfg.ConnectIP == "127.0.0.1" || cfg.ConnectIP == "localhost"
+		isListenAll := cfg.ListenHost == "" || cfg.ListenHost == "0.0.0.0"
+		if (isListenAll && isLoopback) || (cfg.ListenHost != "" && cfg.ListenHost == cfg.ConnectIP) {
+			log.Fatalf("Traffic loop detected: upstream %s:%d is the same as listen address", cfg.ConnectIP, cfg.ConnectPort)
+		}
+	}
+
 	if strings.TrimSpace(optUTLS) != "" {
 		cfg.UTLSClientHello = optUTLS
 	}
