@@ -106,7 +106,9 @@ class MainActivity : ComponentActivity() {
                         startProxy(config)
                     },
                     onStop = {
-                        stopProxy()
+                        lifecycleScope.launch(Dispatchers.IO) {
+                            stopProxy()
+                        }
                     }
                 )
             }
@@ -114,24 +116,89 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun startProxy(config: ProxyConfig) {
-        val intent = Intent(this, ProxyService::class.java).apply {
-            putExtra("config", config)
-        }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            startForegroundService(intent)
-        } else {
-            startService(intent)
+        lifecycleScope.launch(Dispatchers.IO) {
+            try {
+                val binaryPath = ProxyHelper.getBinaryPath(this@MainActivity)
+
+                // Build command
+                val args = mutableListOf(binaryPath, "-listen", config.listen, "-connect", config.connect)
+                if (config.fakeSni.isNotBlank()) args.addAll(listOf("-fake-sni", config.fakeSni))
+                if (config.utls.isNotBlank()) args.addAll(listOf("-utls", config.utls))
+                args.addAll(listOf("-fake-repeat", config.fakeRepeat.toString()))
+                args.addAll(listOf("-fake-delay", config.fakeDelay))
+                args.addAll(listOf("-ack-timeout", config.ackTimeout))
+                args.addAll(listOf("-injector", config.injector))
+                if (config.enableFragment) {
+                    args.add("-enable-fragment")
+                    args.addAll(listOf("-fragment-delay", config.fragmentDelay))
+                    args.addAll(listOf("-sni-chunk", config.sniChunk.toString()))
+                }
+
+                // Request root by running via su
+                val cmd = mutableListOf("su", "-c", args.joinToString(" ") { "'$it'" })
+
+                withContext(Dispatchers.Main) {
+                    logs.clear()
+                    logs.add("Stopping previous instances...")
+                }
+                stopProxy()
+
+                withContext(Dispatchers.Main) {
+                    logs.add("Starting proxy with root...")
+                }
+
+                val process = ProcessBuilder(cmd)
+                    .redirectErrorStream(true)
+                    .start()
+                proxyProcess = process
+
+                withContext(Dispatchers.Main) {
+                    isProxyRunning = true
+                }
+
+                val reader = process.inputStream.bufferedReader()
+                var line: String?
+                while (reader.readLine().also { line = it } != null) {
+                    Log.d(TAG, "Proxy: $line")
+                    withContext(Dispatchers.Main) {
+                        logs.add(line ?: "")
+                        if (logs.size > 1000) logs.removeAt(0)
+                    }
+                }
+
+                val exitCode = process.waitFor()
+                withContext(Dispatchers.Main) {
+                    logs.add("Proxy exited with code $exitCode")
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to run proxy", e)
+                withContext(Dispatchers.Main) {
+                    logs.add("Error: ${e.message}")
+                }
+            } finally {
+                withContext(Dispatchers.Main) {
+                    isProxyRunning = false
+                }
+            }
         }
     }
 
-    private fun stopProxy() {
-        proxyService?.stopProxy()
+    private suspend fun stopProxy() {
+        withContext(Dispatchers.IO) {
+            proxyProcess?.destroy()
+            proxyProcess = null
+            try {
+                // pkill -9 is needed for forceful termination of orphaned processes
+                ProcessBuilder("su", "-c", "pkill -9 -f libsni_spoofing.so").start().waitFor()
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to pkill -9 orphaned proxy", e)
+            }
+        }
     }
 
     override fun onDestroy() {
-        if (isBound) {
-            unbindService(connection)
-            isBound = false
+        lifecycleScope.launch(Dispatchers.IO) {
+            stopProxy()
         }
         super.onDestroy()
     }
