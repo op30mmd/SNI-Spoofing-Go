@@ -44,7 +44,9 @@ class MainActivity : ComponentActivity() {
                         startProxy(config)
                     },
                     onStop = {
-                        stopProxy()
+                        lifecycleScope.launch(Dispatchers.IO) {
+                            stopProxy()
+                        }
                     }
                 )
             }
@@ -75,10 +77,13 @@ class MainActivity : ComponentActivity() {
 
                 withContext(Dispatchers.Main) {
                     logs.clear()
+                    logs.add("Stopping previous instances...")
+                }
+                stopProxy()
+
+                withContext(Dispatchers.Main) {
                     logs.add("Starting proxy with root...")
                 }
-
-                stopProxy()
 
                 val process = ProcessBuilder(cmd)
                     .redirectErrorStream(true)
@@ -116,17 +121,23 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun stopProxy() {
-        lifecycleScope.launch(Dispatchers.IO) {
-            // Since we ran via su, we might need to kill it specifically if destroy() doesn't work well on the su wrapper
+    private suspend fun stopProxy() {
+        withContext(Dispatchers.IO) {
             proxyProcess?.destroy()
             proxyProcess = null
-            // Optional: run "su -c killall sni-spoofing" or similar if needed
+            try {
+                // pkill -9 is needed for forceful termination of orphaned processes
+                ProcessBuilder("su", "-c", "pkill -9 -f libsni_spoofing.so").start().waitFor()
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to pkill -9 orphaned proxy", e)
+            }
         }
     }
 
     override fun onDestroy() {
-        stopProxy()
+        lifecycleScope.launch(Dispatchers.IO) {
+            stopProxy()
+        }
         super.onDestroy()
     }
 }
