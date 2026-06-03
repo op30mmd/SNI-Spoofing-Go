@@ -14,6 +14,8 @@ import android.os.Parcelable
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import kotlinx.coroutines.*
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import java.io.BufferedReader
@@ -66,18 +68,17 @@ class ProxyService : Service() {
     }
 
     private fun startProxy(config: ProxyConfig) {
-        if (proxyProcess != null && config == currentConfig) return
-        currentConfig = config
-
         startForeground(NOTIFICATION_ID, createNotification())
 
         serviceScope.launch {
             try {
-                mutex.withLock {
-                    stopProxyProcessInternal()
-                    _isRunning.emit(true)
-                }
                 val binaryPath = ProxyHelper.getBinaryPath(this@ProxyService)
+                val isStillRunning = mutex.withLock {
+                    val p = proxyProcess
+                    p != null && (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && p.isAlive)
+                }
+                if (isStillRunning && config == currentConfig) return@launch
+
                 val args = mutableListOf(binaryPath, "-listen", config.listen, "-connect", config.connect)
                 if (config.fakeSni.isNotBlank()) args.addAll(listOf("-fake-sni", config.fakeSni))
                 if (config.utls.isNotBlank()) args.addAll(listOf("-utls", config.utls))
@@ -90,18 +91,19 @@ class ProxyService : Service() {
                     args.addAll(listOf("-fragment-delay", config.fragmentDelay))
                     args.addAll(listOf("-sni-chunk", config.sniChunk.toString()))
                 }
-
                 val cmd = mutableListOf("su", "-c", args.joinToString(" ") { "'$it'" })
 
-                _logs.emit("Starting proxy with root...")
+                val process = mutex.withLock {
+                    currentConfig = config
+                    stopProxyProcessInternal()
+                    _isRunning.emit(true)
 
-                val process = withContext(Dispatchers.IO) {
-                    ProcessBuilder(cmd)
+                    _logs.emit("Starting proxy with root...")
+                    val p = ProcessBuilder(cmd)
                         .redirectErrorStream(true)
                         .start()
-                }
-                mutex.withLock {
-                    proxyProcess = process
+                    proxyProcess = p
+                    p
                 }
 
                 val reader = BufferedReader(InputStreamReader(process.inputStream))
@@ -171,15 +173,33 @@ class ProxyService : Service() {
     }
 
     private suspend fun killAllProxyProcessesInternal() {
+        val config = currentConfig
         withContext(Dispatchers.IO) {
             try {
                 val binaryPath = ProxyHelper.getBinaryPath(this@ProxyService)
-                val binaryName = binaryPath.substringAfterLast('/')
 
-                // Try graceful kill first then SIGKILL
-                Runtime.getRuntime().exec(arrayOf("su", "-c", "pkill -SIGTERM $binaryName")).waitFor()
-                delay(500)
-                Runtime.getRuntime().exec(arrayOf("su", "-c", "pkill -SIGKILL $binaryName")).waitFor()
+                Log.d(TAG, "Cleaning up proxy processes: $binaryPath")
+
+                // 1. Kill by full command line match (aggressive)
+                Runtime.getRuntime().exec(arrayOf("su", "-c", "pkill -9 -f '$binaryPath'")).waitFor()
+
+                // 2. Kill by port if config is available
+                config?.let {
+                    val port = it.listen.substringAfterLast(':').toIntOrNull()
+                    if (port != null) {
+                        Log.d(TAG, "Killing processes holding port $port")
+                        // Try both lsof and fuser for better compatibility
+                        Runtime.getRuntime().exec(arrayOf("su", "-c", "lsof -t -i :$port | xargs kill -9")).waitFor()
+                        Runtime.getRuntime().exec(arrayOf("su", "-c", "fuser -k -n tcp $port")).waitFor()
+                    }
+                }
+
+                // Wait for kernel to release the port
+                delay(1000)
+
+                // 3. One last sweep by name
+                val binaryName = binaryPath.substringAfterLast('/')
+                Runtime.getRuntime().exec(arrayOf("su", "-c", "pkill -9 $binaryName")).waitFor()
             } catch (e: Exception) {
                 Log.e(TAG, "Error killing orphaned proxy processes", e)
             }
