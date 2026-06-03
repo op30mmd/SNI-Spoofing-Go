@@ -18,10 +18,13 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import java.io.BufferedReader
 import java.io.InputStreamReader
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 class ProxyService : Service() {
     private val binder = LocalBinder()
     private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    private val mutex = Mutex()
     private var proxyProcess: Process? = null
 
     private val _logs = MutableSharedFlow<String>(replay = 100)
@@ -63,18 +66,17 @@ class ProxyService : Service() {
     }
 
     private fun startProxy(config: ProxyConfig) {
-        if (proxyProcess != null) {
-            if (config == currentConfig) return
-            // Config changed, restart
-            stopProxyProcess()
-        }
+        if (proxyProcess != null && config == currentConfig) return
         currentConfig = config
 
         startForeground(NOTIFICATION_ID, createNotification())
 
         serviceScope.launch {
             try {
-                _isRunning.emit(true)
+                mutex.withLock {
+                    stopProxyProcessInternal()
+                    _isRunning.emit(true)
+                }
                 val binaryPath = ProxyHelper.getBinaryPath(this@ProxyService)
                 val args = mutableListOf(binaryPath, "-listen", config.listen, "-connect", config.connect)
                 if (config.fakeSni.isNotBlank()) args.addAll(listOf("-fake-sni", config.fakeSni))
@@ -93,10 +95,14 @@ class ProxyService : Service() {
 
                 _logs.emit("Starting proxy with root...")
 
-                val process = ProcessBuilder(cmd)
-                    .redirectErrorStream(true)
-                    .start()
-                proxyProcess = process
+                val process = withContext(Dispatchers.IO) {
+                    ProcessBuilder(cmd)
+                        .redirectErrorStream(true)
+                        .start()
+                }
+                mutex.withLock {
+                    proxyProcess = process
+                }
 
                 val reader = BufferedReader(InputStreamReader(process.inputStream))
                 try {
@@ -137,7 +143,9 @@ class ProxyService : Service() {
 
     fun stopProxy() {
         serviceScope.launch {
-            stopProxyProcess()
+            mutex.withLock {
+                stopProxyProcessInternal()
+            }
             _isRunning.emit(false)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
                 stopForeground(STOP_FOREGROUND_REMOVE)
@@ -149,24 +157,31 @@ class ProxyService : Service() {
         }
     }
 
-    private fun stopProxyProcess() {
-        val process = proxyProcess ?: return
+    private suspend fun stopProxyProcessInternal() {
+        val process = proxyProcess
         proxyProcess = null
+        withContext(NonCancellable) {
+            killAllProxyProcessesInternal()
+            if (process != null) {
+                withContext(Dispatchers.IO) {
+                    process.destroy()
+                }
+            }
+        }
+    }
 
-        serviceScope.launch(Dispatchers.IO) {
+    private suspend fun killAllProxyProcessesInternal() {
+        withContext(Dispatchers.IO) {
             try {
-                // Since we run via 'su', process.destroy() only kills the 'su' wrapper.
-                // We need to kill the actual binary specifically.
                 val binaryPath = ProxyHelper.getBinaryPath(this@ProxyService)
                 val binaryName = binaryPath.substringAfterLast('/')
 
                 // Try graceful kill first then SIGKILL
                 Runtime.getRuntime().exec(arrayOf("su", "-c", "pkill -SIGTERM $binaryName")).waitFor()
                 delay(500)
-                process.destroy()
                 Runtime.getRuntime().exec(arrayOf("su", "-c", "pkill -SIGKILL $binaryName")).waitFor()
             } catch (e: Exception) {
-                Log.e(TAG, "Error stopping proxy process", e)
+                Log.e(TAG, "Error killing orphaned proxy processes", e)
             }
         }
     }
