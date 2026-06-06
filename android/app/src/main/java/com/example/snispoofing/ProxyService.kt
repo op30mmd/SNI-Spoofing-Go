@@ -14,14 +14,19 @@ import android.os.Parcelable
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import kotlinx.coroutines.*
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import java.io.BufferedReader
 import java.io.InputStreamReader
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 class ProxyService : Service() {
     private val binder = LocalBinder()
     private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    private val mutex = Mutex()
     private var proxyProcess: Process? = null
 
     private val _logs = MutableSharedFlow<String>(replay = 100)
@@ -63,19 +68,17 @@ class ProxyService : Service() {
     }
 
     private fun startProxy(config: ProxyConfig) {
-        if (proxyProcess != null) {
-            if (config == currentConfig) return
-            // Config changed, restart
-            stopProxyProcess()
-        }
-        currentConfig = config
-
         startForeground(NOTIFICATION_ID, createNotification())
 
         serviceScope.launch {
             try {
-                _isRunning.emit(true)
                 val binaryPath = ProxyHelper.getBinaryPath(this@ProxyService)
+                val isStillRunning = mutex.withLock {
+                    val p = proxyProcess
+                    p != null && (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && p.isAlive)
+                }
+                if (isStillRunning && config == currentConfig) return@launch
+
                 val args = mutableListOf(binaryPath, "-listen", config.listen, "-connect", config.connect)
                 if (config.fakeSni.isNotBlank()) args.addAll(listOf("-fake-sni", config.fakeSni))
                 if (config.utls.isNotBlank()) args.addAll(listOf("-utls", config.utls))
@@ -88,15 +91,20 @@ class ProxyService : Service() {
                     args.addAll(listOf("-fragment-delay", config.fragmentDelay))
                     args.addAll(listOf("-sni-chunk", config.sniChunk.toString()))
                 }
-
                 val cmd = mutableListOf("su", "-c", args.joinToString(" ") { "'$it'" })
 
-                _logs.emit("Starting proxy with root...")
+                val process = mutex.withLock {
+                    currentConfig = config
+                    stopProxyProcessInternal()
+                    _isRunning.emit(true)
 
-                val process = ProcessBuilder(cmd)
-                    .redirectErrorStream(true)
-                    .start()
-                proxyProcess = process
+                    _logs.emit("Starting proxy with root...")
+                    val p = ProcessBuilder(cmd)
+                        .redirectErrorStream(true)
+                        .start()
+                    proxyProcess = p
+                    p
+                }
 
                 val reader = BufferedReader(InputStreamReader(process.inputStream))
                 try {
@@ -137,7 +145,9 @@ class ProxyService : Service() {
 
     fun stopProxy() {
         serviceScope.launch {
-            stopProxyProcess()
+            mutex.withLock {
+                stopProxyProcessInternal()
+            }
             _isRunning.emit(false)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
                 stopForeground(STOP_FOREGROUND_REMOVE)
@@ -149,24 +159,49 @@ class ProxyService : Service() {
         }
     }
 
-    private fun stopProxyProcess() {
-        val process = proxyProcess ?: return
+    private suspend fun stopProxyProcessInternal() {
+        val process = proxyProcess
         proxyProcess = null
+        withContext(NonCancellable) {
+            killAllProxyProcessesInternal()
+            if (process != null) {
+                withContext(Dispatchers.IO) {
+                    process.destroy()
+                }
+            }
+        }
+    }
 
-        serviceScope.launch(Dispatchers.IO) {
+    private suspend fun killAllProxyProcessesInternal() {
+        val config = currentConfig
+        withContext(Dispatchers.IO) {
             try {
-                // Since we run via 'su', process.destroy() only kills the 'su' wrapper.
-                // We need to kill the actual binary specifically.
                 val binaryPath = ProxyHelper.getBinaryPath(this@ProxyService)
-                val binaryName = binaryPath.substringAfterLast('/')
 
-                // Try graceful kill first then SIGKILL
-                Runtime.getRuntime().exec(arrayOf("su", "-c", "pkill -SIGTERM $binaryName")).waitFor()
-                delay(500)
-                process.destroy()
-                Runtime.getRuntime().exec(arrayOf("su", "-c", "pkill -SIGKILL $binaryName")).waitFor()
+                Log.d(TAG, "Cleaning up proxy processes: $binaryPath")
+
+                // 1. Kill by full command line match (aggressive)
+                Runtime.getRuntime().exec(arrayOf("su", "-c", "pkill -9 -f '$binaryPath'")).waitFor()
+
+                // 2. Kill by port if config is available
+                config?.let {
+                    val port = it.listen.substringAfterLast(':').toIntOrNull()
+                    if (port != null) {
+                        Log.d(TAG, "Killing processes holding port $port")
+                        // Try both lsof and fuser for better compatibility
+                        Runtime.getRuntime().exec(arrayOf("su", "-c", "lsof -t -i :$port | xargs kill -9")).waitFor()
+                        Runtime.getRuntime().exec(arrayOf("su", "-c", "fuser -k -n tcp $port")).waitFor()
+                    }
+                }
+
+                // Wait for kernel to release the port
+                delay(1000)
+
+                // 3. One last sweep by name
+                val binaryName = binaryPath.substringAfterLast('/')
+                Runtime.getRuntime().exec(arrayOf("su", "-c", "pkill -9 $binaryName")).waitFor()
             } catch (e: Exception) {
-                Log.e(TAG, "Error stopping proxy process", e)
+                Log.e(TAG, "Error killing orphaned proxy processes", e)
             }
         }
     }
